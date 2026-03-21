@@ -7,7 +7,7 @@ from mn_wifi.sumo.runner import sumo
 from mn_wifi.link import wmediumd, ITSLink
 from mn_wifi.wmediumdConnector import interference
 from mn_wifi.telemetry import telemetry 
-from mininet.node import Controller
+from mininet.node import Controller, RemoteController
 import subprocess
 import os
 
@@ -53,7 +53,7 @@ def topology():
                              position='1635,1265,0', **kwargs)
 
     server = net.addHost('server', ip='10.0.0.100/24') 
-    c0 = net.addController('c0', controller=Controller)
+    c0 = net.addController('c0', controller=RemoteController, ip='127.0.0.1', port=6653)
 
     print("*** Configuring Propagation Model")
     net.setPropagationModel(model="logDistance", exp=2.8)
