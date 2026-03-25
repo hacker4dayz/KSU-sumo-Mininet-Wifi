@@ -151,7 +151,7 @@ def start_recording(net):
         car.cmd(f"ip maddr add 239.0.0.1 dev {iface}")
 
         cmd = (
-            f"ffmpeg -fflags +genpts -flags low_delay -fflags discardcorrupt "
+            f"ffmpeg -y -fflags +genpts -flags low_delay -fflags discardcorrupt "
             f"-i udp://239.0.0.1:1234?localaddr={ip}\&interface={iface}\&pkt_size=1316 "
             f"-c copy -map 0:v:0 -f mpegts {ts_file} "
             f"> {recv_log} 2>&1 &"
@@ -165,7 +165,7 @@ def convert_to_mp4(net):
         ts_file = f"{car.name}.ts"
         mp4_file = f"{car.name}.mp4"
 
-        cmd = f"ffmpeg -i {ts_file} -c copy {mp4_file}"
+        cmd = f"ffmpeg -y -i {ts_file} -c copy {mp4_file}"
         car.cmd(cmd)
 
 def run_psnr(net):
