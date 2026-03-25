@@ -228,7 +228,8 @@ def topology():
         'c0',
         controller=RemoteController,
         ip='127.0.0.1',
-        port=6633
+        port=6633,
+        protocol='tcp'
     )
 
     print("*** Configuring Propagation Model")
@@ -287,7 +288,13 @@ def topology():
     c0.start()
     for ap in net.aps:
         ap.start([c0])
-        ap.cmd('ovs-ofctl del-flows {}'.format(ap.name))
+            # Force OpenFlow 1.3
+        ap.cmd(f'ovs-vsctl set Bridge {ap.name} protocols=OpenFlow13')
+        print(f"*** {ap.name}: OpenFlow 1.3 enabled")
+
+    print("*** Waiting 3s for Ryu to connect...")
+    time.sleep(3)
+
     
     print("*** Plotting Telemetry...")
     nodes = net.cars + net.aps
