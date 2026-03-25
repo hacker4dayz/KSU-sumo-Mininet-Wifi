@@ -288,7 +288,6 @@ def topology():
     for ap in net.aps:
         ap.start([c0])
         ap.cmd('ovs-ofctl del-flows {}'.format(ap.name))
-        ap.cmd('ovs-ofctl add-flow {} "priority=100, actions=NORMAL"'.format(ap.name))
     
     print("*** Plotting Telemetry...")
     nodes = net.cars + net.aps
