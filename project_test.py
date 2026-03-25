@@ -6,17 +6,19 @@ from mn_wifi.net import Mininet_wifi
 from mn_wifi.sumo.runner import sumo
 from mn_wifi.link import wmediumd, ITSLink
 from mn_wifi.wmediumdConnector import interference
-from mn_wifi.telemetry import telemetry 
-from mininet.node import Controller, RemoteController
+from mn_wifi.telemetry import telemetry
+from mininet.node import Controller
 import os
 import threading
 import time
 from time import strftime
 import subprocess
 
+#-----------------------------------------------------------------------
+# Configurations:
 SHARED_DIR = os.path.abspath('.')
+TS_FILE = 'highway_mountain.ts'
 VIDEO_FILE = 'highway_mountain.mp4'
-STREAM_PORT = 5000
 
 def ensure_dir(d):
     os.makedirs(d, exist_ok=True)
@@ -28,8 +30,8 @@ def prepare_video():
         return False
     print(f"*** Video ready: {video_path}")
     return True
-
-# Association logger -------------------------------------------------------------------
+#-------------------------------------------------------------------------
+# Association logger code:
 def get_ap_wlan0_addr(ap):
     intf = ap.wintfs[0].name
     out = ap.cmd(f"iw dev {intf} info")
@@ -121,129 +123,205 @@ def start_assoc_logger_fast(net, interval=0.8, timeout=60, csv=None, rebuild_map
     t = threading.Thread(target=logger, daemon=True)
     t.start()
     return stop_event
-    #----------------------------------------------------------------------
+# ---------------------------------------------------------------------
+# FFMPEG Code:
+def start_video_stream(server):
+    print("*** Starting video stream on server...")
 
+    cmd = (
+        f"ffmpeg -re -i highway_mountain.ts " 
+        f"-c:v libx264 -preset veryfast -tune zerolatency "
+        f"-profile:v baseline -level 3.0 "
+        f"-g 25 -keyint_min 25 "
+        f"-b:v 800k -maxrate 1200k -bufsize 2400k "
+        f"-c:a aac -ar 44100 -b:a 96k "
+        f"-f mpegts udp://239.0.0.1:1234?localaddr=10.0.0.100" 
+        f"> stream.log 2>&1"
+    )
+    server.cmd(cmd)
+
+def start_recording(net):
+    print("*** Starting recording on vehicles...")
+    for car in net.cars:
+        ts_file = f"{car.name}.ts"
+        recv_log = f"{car.name}_recv.log"
+        iface = f"{car.name}-wlan0"
+        ip = ip = car.cmd(f"ip -4 addr show dev {iface} | grep inet | awk '{{print $2}}' | cut -d/ -f1").strip()
+        
+        car.cmd(f"ip maddr add 239.0.0.1 dev {iface}")
+
+        cmd = (
+            f"ffmpeg -fflags +genpts -flags low_delay -fflags discardcorrupt "
+            f"-i udp://239.0.0.1:1234?localaddr={ip}\&interface={iface}\&pkt_size=1316 "
+            f"-c copy -map 0:v:0 -f mpegts {ts_file} "
+            f"> {recv_log} 2>&1 &"
+        )
+        car.cmd(cmd)
+
+def convert_to_mp4(net):
+    print("*** Converting TS to MP4...")
+    
+    for car in net.cars:
+        ts_file = f"{car.name}.ts"
+        mp4_file = f"{car.name}.mp4"
+
+        cmd = f"ffmpeg -i {ts_file} -c copy {mp4_file}"
+        car.cmd(cmd)
+
+def run_psnr(net):
+    print("*** Running PSNR...")
+    for car in net.cars:
+        mp4_file = f"{car.name}.mp4"
+        log_file = f"psnr_{car.name}.log"
+        cmd = (
+            f"ffmpeg -i {mp4_file} -i {TS_FILE} "
+            f"-lavfi psnr=stats_file={log_file} -f null -"
+        )
+        car.cmd(cmd)
+#----------------------------------------------------------------------
+# Main Code:
 def topology():
-    net = Mininet_wifi(link=wmediumd, wmediumd_mode=interference)
+
+    if not prepare_video():
+        return
+
+    ensure_dir(SHARED_DIR)
+
+    net = Mininet_wifi(
+        controller=Controller,
+        link=wmediumd,
+        wmediumd_mode=interference
+    )
 
     print("*** Starting...")
-
     print("*** Adding nodes...")
 
-    # 12 Normal cars
+    # 12 normal cars
     cars = []
-    for x in range(0,12):
-        cars.append(
-        net.addCar('car%s' % (x+1), 
-                   wlans=2)
-        )
-        
-    # Emergency vehicles (police + ambulance)
-    police = net.addCar('police',
-                        wlans=2)
-    ambulance = net.addCar('ambulance',
-                           wlans=2)
-    
+    for x in range(0, 12):
+        car = net.addCar(f'car{x+1}', wlans=2)
+        car.params['priority'] = 'normal'
+        cars.append(car)
+
+    # Emergency vehicles
+    police = net.addCar('police', wlans=2)
+    ambulance = net.addCar('ambulance', wlans=2)
     police.params['priority'] = 'high'
     ambulance.params['priority'] = 'high'
-    for car in cars:  
-        car.params['priority'] = 'normal'
     print("*** Priority: police/high, ambulance/high, others/normal")
 
-    kwargs = {'ssid': 'roadside-ssid', 
-              'mode': 'g',
-              'datapath': 'user'}
-    ap1 = net.addAccessPoint('ap1', channel='1',
-                             position='900,830,0', **kwargs)
-    ap2 = net.addAccessPoint('ap2', channel='6',
-                             position='2000,100,0', **kwargs)
-    ap3 = net.addAccessPoint('ap3', channel='11',
-                             position='750,1400,0', **kwargs)
-    ap4 = net.addAccessPoint('ap4', channel='1',
-                             position='705,265,0', **kwargs)
-    ap5 = net.addAccessPoint('ap5', channel='6',
-                             position='1635,1265,0', **kwargs)
+    kwargs = {
+        'ssid': 'roadside-ssid',
+        'mode': 'g',
+        'datapath': 'user'
+    }
+    ap1 = net.addAccessPoint('ap1', channel='1', position='900,830,0', **kwargs)
+    ap1.params['txpower'] = 20
+    ap2 = net.addAccessPoint('ap2', channel='6', position='2000,100,0', **kwargs)
+    ap3 = net.addAccessPoint('ap3', channel='11', position='750,1400,0', **kwargs)
+    ap4 = net.addAccessPoint('ap4', channel='1', position='705,265,0', **kwargs)
+    ap5 = net.addAccessPoint('ap5', channel='6', position='1635,1265,0', **kwargs)
 
-    server = net.addHost('server', ip='10.0.0.100/24') 
-    c0 = net.addController('c0', controller=RemoteController, ip='127.0.0.1', port=6653)
+    server = net.addStation('server', wlans=1, ip='10.0.0.100/24', position='902,832,0' )
+    
+    c0 = net.addController('c0', controller=Controller)
 
     print("*** Configuring Propagation Model")
-    net.setPropagationModel(model="logDistance", exp=2.8)
+    net.setPropagationModel(model="logNormalShadowing", exp=2.7)
 
     print("*** Configuring nodes")
     net.configureWifiNodes()
-  
-    # AP backbone links (your tree topology)
+
+    # AP backbone links (tree)
     print("*** Creating AP backbone links...")
     net.addLink(ap1, c0)
     net.addLink(ap1, ap2)
     net.addLink(ap1, ap3)
     net.addLink(ap1, ap4)
     net.addLink(ap1, ap5)
-    net.addLink(ap1, server)
+    net.addLink(server, ap1)
 
     # ITSLink for DSRC (wlan1)
     print("*** Adding ITSLinks (DSRC channel 181)...")
     for car in net.cars:
-        net.addLink(car, intf=car.wintfs[1].name,
-                    cls=ITSLink, band=20, channel=181)
+        net.addLink(car, intf=car.wintfs[1].name, cls=ITSLink, band=20, channel=181)
 
+    # Ensure SUMO cfg is in the same dir
+    if not os.path.exists('ksuroadtest.sumocfg'):
+        print("*** WARNING: ksuroadtest.sumocfg not found in current directory.")
+    
     # Start SUMO
     print("*** Starting SUMO simulation...")
-    for node in net.stations:
-        if node.name not in [f'car{i}' for i in range(15)]:
-            node.hide()
 
     net.useExternalProgram(
-        program=sumo,    
-        port=8813,    
-        config_file='ksuroadtest.sumocfg', 
-        extra_params=["--start", "--delay", "1000"], 
+        program=sumo,
+        port=8813,
+        config_file='ksuroadtest.sumocfg',
+        extra_params=["--start", "--delay", "1000"],
         clients=1,
         exec_order=0
     )
 
-    print("*** Starting network")
+    print("*** Building network...")
     net.build()
-    
+
     print("*** Configuring AP wlan0 IPs...")
     ap_ips = ['10.0.0.101', '10.0.0.102', '10.0.0.103', '10.0.0.104', '10.0.0.105']
     for i, ap in enumerate(net.aps):
         ap.setIP(ap_ips[i] + '/24', intf=ap.wintfs[0].name)
         print(f"  {ap.name}-wlan0: {ap_ips[i]}")
 
-    # Start APs standalone
+    for i, car in enumerate(net.cars):
+        ip = '10.0.0.%d/24' % (200 + i + 1)
+        intf = car.wintfs[0].name
+        car.cmd(f'ip addr flush dev {intf}')
+        car.cmd(f'ip addr add {ip} dev {intf}')
+        car.cmd('ip route add default via 10.0.0.101')
+
+    print("*** Starting controller and APs")
+    c0.start()
     for ap in net.aps:
         ap.start([c0])
-
-    # Dual IP config (wlan0=AP WiFi, wlan1=DSRC)
-    print("*** Configuring cars (dual IP)...")
-    for id, car in enumerate(net.cars):
-        # wlan0 = WPA2 AP connection
-        car.setIP(f'10.0.0.{id+1}/24', intf=car.wintfs[0].name)
-        # wlan1 = DSRC ITS backhaul
-        car.setIP(f'10.0.1.{id+1}/24', intf=car.wintfs[1].name)
-        print(f"  {car.name}: wlan0=10.0.0.{id+1}, wlan1=10.0.1.{id+1}")
-
+        ap.cmd('ovs-ofctl del-flows {}'.format(ap.name))
+        ap.cmd('ovs-ofctl add-flow {} "priority=100, actions=NORMAL"'.format(ap.name))
+    
     print("*** Plotting Telemetry...")
-    # Telemetry cars + APs
     nodes = net.cars + net.aps
-    telemetry(nodes=nodes, data_type='position',
-              min_x=-1200, min_y=-1500,
-              max_x=4000, max_y=3000)
+    telemetry(
+        nodes=nodes,
+        data_type='position',
+        min_x=-1200, min_y=-1500,
+        max_x=4000, max_y=3000,
+    )
 
     # Wait for association, then start streaming
     assoc_csv = os.path.join(SHARED_DIR, 'assoc_log.csv')
     stop_event = start_assoc_logger_fast(net, interval=0.6, timeout=45, csv=assoc_csv)
     stop_event.wait()
     print("*** All cars associated.")
-    
+
+    # Start Recording (Vehicls are listening)
+    start_recording(net)
+    # Start Streaming (Sevrer is Streaming)
+    start_video_stream(server)
+
+    # Convert files
+    convert_to_mp4(net)
+
+    # Run PSNR
+    run_psnr(net)
+
+    print("*** Video processing complete.")
+
     print("*** Starting CLI (type exit to quit)...")
     CLI(net)
 
     print("*** Stopping network...")
     net.stop()
 
+if __name__ == '__main__':
+    setLogLevel('info')
+    topology()
 if __name__ == '__main__':
     setLogLevel('info')
     topology()
