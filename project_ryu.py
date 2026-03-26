@@ -213,7 +213,7 @@ def topology():
     kwargs = {
         'ssid': 'roadside-ssid',
         'mode': 'g',
-        'datapath': 'user'
+        
     }
     ap1 = net.addAccessPoint('ap1', channel='1', position='900,830,0', **kwargs)
     ap1.params['txpower'] = 20
@@ -240,7 +240,6 @@ def topology():
 
     # AP backbone links (tree)
     print("*** Creating AP backbone links...")
-    net.addLink(ap1, c0)
     net.addLink(ap1, ap2)
     net.addLink(ap1, ap3)
     net.addLink(ap1, ap4)
@@ -288,9 +287,9 @@ def topology():
     c0.start()
     for ap in net.aps:
         ap.start([c0])
-            # Force OpenFlow 1.3
         ap.cmd(f'ovs-vsctl set Bridge {ap.name} protocols=OpenFlow13')
-        print(f"*** {ap.name}: OpenFlow 1.3 enabled")
+        ap.cmd(f'ovs-vsctl set-controller {ap.name} tcp:127.0.0.1:6633')
+        print(f"*** {ap.name}: OpenFlow 1.3 enabled, controller=tcp:127.0.0.1:6633")
 
     print("*** Waiting 3s for Ryu to connect...")
     time.sleep(3)
