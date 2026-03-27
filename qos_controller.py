@@ -5,10 +5,17 @@ from ryu.controller import ofp_event
 from ryu.controller.handler import CONFIG_DISPATCHER, MAIN_DISPATCHER, set_ev_cls
 from ryu.ofproto import ofproto_v1_3
 from ryu.lib.packet import packet, ethernet, ipv4, udp, ipv6
-
+from ryu.lib.packet import ether_types
 
 class QoSController(app_manager.RyuApp):
     OFP_VERSIONS = [ofproto_v1_3.OFP_VERSION]
+
+    def __init__(self, *args, **kwargs):
+        super(QoSController, self).__init__(*args, **kwargs)
+        self.high_priority_ips = [
+            "10.0.0.213",  # Police IP
+            "10.0.0.214"   # Ambulance IP
+        ]
 
     def add_flow(self, datapath, priority, match, actions, buffer_id=None):
         ofproto = datapath.ofproto
@@ -84,15 +91,37 @@ class QoSController(app_manager.RyuApp):
 
         actions = [parser.OFPActionOutput(ofproto.OFPP_FLOOD)]
 
-        if udp_pkt and ip_pkt.dst == "239.0.0.1" and udp_pkt.dst_port == 1234:
+        priority = 5  
+
+        # Emergency vehicle:
+        if ip_pkt and (ip_pkt.dst in self.high_priority_ips or ip_pkt.src in self.high_priority_ips):
+            priority = 300
+            self.logger.warning(
+                "Emergency vehicle flow src=%s dst=%s proto=%s in_port=%s",
+                ip_pkt.src, ip_pkt.dst, ip_pkt.proto, in_port
+            )
+
+            match = parser.OFPMatch(
+                eth_type=ether_types.ETH_TYPE_IP,
+                ipv4_src=ip_pkt.src,
+                ipv4_dst=ip_pkt.dst,
+            )
+            if udp_pkt:
+                match.set_udp_src(udp_pkt.src_port)
+                match.set_udp_dst(udp_pkt.dst_port)
+
+            self.add_flow(datapath, priority, match, actions, msg.buffer_id)
+
+        # High‑priority video multicast flow
+        elif udp_pkt and ip_pkt.dst == "239.0.0.1" and udp_pkt.dst_port == 1234:
+            priority = 200
             self.logger.warning(
                 "Video flow detected src=%s dst=%s sport=%s dport=%s in_port=%s",
                 ip_pkt.src, ip_pkt.dst, udp_pkt.src_port, udp_pkt.dst_port, in_port
             )
 
             match = parser.OFPMatch(
-                in_port=in_port,
-                eth_type=0x0800,
+                eth_type=ether_types.ETH_TYPE_IP,
                 ip_proto=17,
                 ipv4_dst="239.0.0.1",
                 udp_dst=1234
@@ -100,15 +129,15 @@ class QoSController(app_manager.RyuApp):
 
             self.add_flow(datapath, 200, match, actions, msg.buffer_id)
 
-
+        # Best‑effort UDP
         elif udp_pkt:
+            priority = 10
             self.logger.warning(
                 "Best effort UDP src=%s dst=%s sport=%s dport=%s in_port=%s",
                 ip_pkt.src, ip_pkt.dst, udp_pkt.src_port, udp_pkt.dst_port, in_port
             )
 
             match = parser.OFPMatch(
-                in_port=in_port,
                 eth_type=0x0800,
                 ip_proto=17,
                 ipv4_src=ip_pkt.src,
@@ -118,7 +147,7 @@ class QoSController(app_manager.RyuApp):
             )
 
             self.add_flow(datapath, 10, match, actions, msg.buffer_id)
-
+  
         else:
             self.logger.warning(
                 "Best effort IPv4 src=%s dst=%s proto=%s in_port=%s",
@@ -126,7 +155,6 @@ class QoSController(app_manager.RyuApp):
             )
 
             match = parser.OFPMatch(
-                in_port=in_port,
                 eth_type=0x0800,
                 ipv4_src=ip_pkt.src,
                 ipv4_dst=ip_pkt.dst,
