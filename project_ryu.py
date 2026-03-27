@@ -80,7 +80,7 @@ def start_assoc_logger_fast(net, interval=0.8, timeout=60, csv=None, rebuild_map
         start_time = time.time()
         iteration = 0
         if csv:
-            with open(csv, 'w') as f:   # recreate CSV at start
+            with open(csv, 'w') as f: 
                 f.write('timestamp,car,ssid,bssid,ap,signal\n')
 
         while not stop_event.is_set():
@@ -128,17 +128,39 @@ def start_assoc_logger_fast(net, interval=0.8, timeout=60, csv=None, rebuild_map
 def start_video_stream(server):
     print("*** Starting video stream on server...")
 
-    cmd = (
+    server.cmd(
         f"ffmpeg -re -i highway_mountain.ts " 
         f"-c:v libx264 -preset veryfast -tune zerolatency "
         f"-profile:v baseline -level 3.0 "
         f"-g 25 -keyint_min 25 "
         f"-b:v 800k -maxrate 1200k -bufsize 2400k "
         f"-c:a aac -ar 44100 -b:a 96k "
-        f"-f mpegts udp://239.0.0.1:1234?localaddr=10.0.0.100" 
-        f"> stream_ryu.log 2>&1"
+        f"-f mpegts udp://239.0.0.1:1234?localaddr=10.0.0.100 " 
+        f"> multicast_normal_ryu.log 2>&1"
     )
-    server.cmd(cmd)
+
+    server.cmd(
+        f"ffmpeg -re -i highway_mountain.ts " 
+        f"-c:v libx264 -preset veryfast -tune zerolatency "
+        f"-profile:v baseline -level 3.0 "
+        f"-g 25 -keyint_min 25 "
+        f"-b:v 2000k -maxrate 2500k -bufsize 3000k "
+        f"-c:a aac -ar 44100 -b:a 128k "
+        f"-f mpegts udp://10.0.0.213:1235?localaddr=10.0.0.100 " 
+        f"> unicast_police_ryu.log 2>&1"
+    )
+
+    server.cmd(
+        f"ffmpeg -re -i highway_mountain.ts " 
+        f"-c:v libx264 -preset veryfast -tune zerolatency "
+        f"-profile:v baseline -level 3.0 "
+        f"-g 25 -keyint_min 25 "
+        f"-b:v 2000k -maxrate 2500k -bufsize 3000k "
+        f"-c:a aac -ar 44100 -b:a 128k "
+        f"-f mpegts udp://10.0.0.214:1236?localaddr=10.0.0.100 " 
+        f"> unicast_ambulance_ryu.log 2>&1"
+    )
+ 
 
 def start_recording(net):
     print("*** Starting recording on vehicles...")
@@ -146,16 +168,38 @@ def start_recording(net):
         ts_file = f"{car.name}_ryu.ts"
         recv_log = f"{car.name}_ryu_recv.log"
         iface = f"{car.name}-wlan0"
-        ip = ip = car.cmd(f"ip -4 addr show dev {iface} | grep inet | awk '{{print $2}}' | cut -d/ -f1").strip()
+        
+        ip = car.cmd(f"ip -4 addr show dev {iface} | grep inet | awk '{{print $2}}' | cut -d/ -f1").strip()
+        print(f"*** {car.name} IP: {ip}")
         
         car.cmd(f"ip maddr add 239.0.0.1 dev {iface}")
 
-        cmd = (
-            f"ffmpeg -y -fflags +genpts -flags low_delay -fflags discardcorrupt "
-            f"-i udp://239.0.0.1:1234?localaddr={ip}\&interface={iface}\&pkt_size=1316 "
-            f"-c copy -map 0:v:0 -f mpegts {ts_file} "
-            f"> {recv_log} 2>&1 &"
-        )
+        if car.name == 'police':
+            # Police: record HIGH QUALITY unicast stream
+            cmd = (
+                f"ffmpeg -y -fflags +genpts -flags low_delay -fflags discardcorrupt "
+                f"-i udp://{ip}:1235?localaddr={ip}\&interface={iface} "
+                f"-c copy -f mpegts {ts_file} "
+                f"> {recv_log} 2>&1 &"
+            )
+        
+        elif car.name == 'ambulance':
+            # Ambulance: record HIGH QUALITY unicast stream  
+            cmd = (
+                f"ffmpeg -y -fflags +genpts -flags low_delay -fflags discardcorrupt "
+                f"-i udp://{ip}:1236?localaddr={ip}\&interface={iface} "
+                f"-c copy -f mpegts {ts_file} "
+                f"> {recv_log} 2>&1 &"
+            )
+
+        else:
+            # Normal cars: record multicast stream
+            cmd = (
+                f"ffmpeg -y -fflags +genpts -flags low_delay -fflags discardcorrupt "
+                f"-i udp://239.0.0.1:1234?localaddr={ip}\&interface={iface}\&pkt_size=1316 "
+                f"-c copy -f mpegts {ts_file} "
+                f"> {recv_log} 2>&1 &"
+            )
         car.cmd(cmd)
 
 def convert_to_mp4(net):
@@ -213,10 +257,9 @@ def topology():
     kwargs = {
         'ssid': 'roadside-ssid',
         'mode': 'g',
-        
+        'datapath': 'user'
     }
     ap1 = net.addAccessPoint('ap1', channel='1', position='900,830,0', **kwargs)
-    ap1.params['txpower'] = 20
     ap2 = net.addAccessPoint('ap2', channel='6', position='2000,100,0', **kwargs)
     ap3 = net.addAccessPoint('ap3', channel='11', position='750,1400,0', **kwargs)
     ap4 = net.addAccessPoint('ap4', channel='1', position='705,265,0', **kwargs)
@@ -224,13 +267,7 @@ def topology():
 
     server = net.addStation('server', wlans=1, ip='10.0.0.100/24', position='902,832,0' )
     
-    c0 = net.addController(
-        'c0',
-        controller=RemoteController,
-        ip='127.0.0.1',
-        port=6633,
-        protocol='tcp'
-    )
+    c0 = RemoteController('c0', ip='127.0.0.1', port=6633, protocols='tcp')
 
     print("*** Configuring Propagation Model")
     net.setPropagationModel(model="logNormalShadowing", exp=2.7)
@@ -240,6 +277,7 @@ def topology():
 
     # AP backbone links (tree)
     print("*** Creating AP backbone links...")
+    net.addLink(ap1, c0)
     net.addLink(ap1, ap2)
     net.addLink(ap1, ap3)
     net.addLink(ap1, ap4)
@@ -285,16 +323,17 @@ def topology():
 
     print("*** Starting controller and APs")
     c0.start()
+
     for ap in net.aps:
+        print(f"*** Starting {ap.name}...")
         ap.start([c0])
-        ap.cmd(f'ovs-vsctl set Bridge {ap.name} protocols=OpenFlow13')
+
         ap.cmd(f'ovs-vsctl set-controller {ap.name} tcp:127.0.0.1:6633')
-        print(f"*** {ap.name}: OpenFlow 1.3 enabled, controller=tcp:127.0.0.1:6633")
+        ap.cmd(f'ovs-vsctl set Bridge {ap.name} protocols=OpenFlow13')
 
-    print("*** Waiting 3s for Ryu to connect...")
-    time.sleep(3)
+    print("*** Waiting 5s for Ryu controller connection...")
+    time.sleep(5)
 
-    
     print("*** Plotting Telemetry...")
     nodes = net.cars + net.aps
     telemetry(
