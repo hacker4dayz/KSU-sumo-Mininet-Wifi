@@ -135,7 +135,7 @@ def start_video_stream(server):
         f"-g 25 -keyint_min 25 "
         f"-b:v 800k -maxrate 1200k -bufsize 2400k "
         f"-c:a aac -ar 44100 -b:a 96k "
-        f"-f mpegts udp://239.0.0.1:1234?localaddr=10.0.0.100" 
+        f"-f mpegts udp://239.0.0.1:1234?localaddr=10.0.0.100 " 
         f"> stream.log 2>&1"
     )
     server.cmd(cmd)
